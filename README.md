@@ -8,8 +8,8 @@ Applug grew out of [Twist Commando](https://twistcommando.com)'s App Link and ke
 
 | | |
 |---|---|
-| Providers | ThUNER (planned) |
-| Consumers | Twist Commando, Action Hero (planned) |
+| Providers | ThUNER (from 1.3.4) |
+| Consumers | Twist Commando (from 0.15), Action Hero |
 
 ## Offering controls
 
