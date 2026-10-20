@@ -70,8 +70,10 @@ swift run applug turn "Applug Demo" volume 0.8
 Swift Package Manager, macOS 14 or later:
 
 ```swift
-.package(path: "../applug")   // until it has a public home
+.package(url: "https://github.com/idallas/applug", from: "0.1.0")
 ```
+
+Fixes arrive with new tags, so depend on a version, not a branch.
 
 Sandboxed providers need `com.apple.security.network.server`; sandboxed consumers need `com.apple.security.network.client`.
 
