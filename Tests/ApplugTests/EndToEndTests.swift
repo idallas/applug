@@ -418,66 +418,6 @@ struct EndToEndTests {
         raw.send(String(repeating: "x", count: Limits.maxLine + 10), newline: false)
         #expect(await eventually { raw.isClosed })
     }
-
-    // MARK: App Link compatibility
-
-    @Test func appLinkTwistCommandoGetsControlsWithoutMetersUnlessItSaysSo() async throws {
-        let fake = try FakeTwistCommando(welcome: #"{"type":"welcome","app":"Twist Commando","version":"0.13.0","protocol":1}"#)
-        defer { fake.stop() }
-        #expect(await eventually { fake.port != nil })
-        let provider = makeProvider()
-        var turns: [String] = []
-        provider.onTurn = { turns.append("\($0.from.name) \($0.id)") }
-        provider.appLinkCompatibility = AppLinkCompatibility(port: fake.port!, onlyWhileRunning: nil)
-        provider.start()
-        defer { provider.stop() }
-
-        #expect(await eventually { fake.received.contains { if case .controls = $0 { true } else { false } } })
-        guard case .hello(let hello) = fake.received.first else { Issue.record("no hello first"); return }
-        #expect(hello.app == "test.provider")
-        #expect(hello.protocolVersion == 3)
-        guard case .controls(let controls) = fake.received.last else { Issue.record("no controls"); return }
-        #expect(!controls.contains { $0.kind == .meter })
-        #expect(provider.consumers.map(\.name) == ["Twist Commando"])
-
-        fake.send(.turn(id: "threshold", value: 0.2, steps: nil))
-        #expect(await eventually { turns == ["Twist Commando threshold"] })
-    }
-
-    @Test func appLinkTwistCommandoThatSpeaksApplugIsLeftAlone() async throws {
-        let fake = try FakeTwistCommando(welcome: #"{"type":"welcome","app":"Twist Commando","version":"0.15.0","protocol":3,"meters":true}"#)
-        defer { fake.stop() }
-        #expect(await eventually { fake.port != nil })
-        let provider = makeProvider()
-        var compatibility = AppLinkCompatibility(port: fake.port!, onlyWhileRunning: nil)
-        compatibility.retryDelay = .milliseconds(200)
-        provider.appLinkCompatibility = compatibility
-        provider.start()
-        defer { provider.stop() }
-
-        #expect(await eventually { fake.connections == 1 && fake.openConnections == 0 })
-        #expect(!fake.received.contains { if case .controls = $0 { true } else { false } })
-        #expect(provider.consumers.isEmpty)
-        // It doesn't come back, though a retry would come after 0.2 s.
-        try await Task.sleep(for: .seconds(1))
-        #expect(fake.connections == 1)
-    }
-
-    @Test func appLinkGivesUpOnAListenerThatNeverWelcomes() async throws {
-        let fake = try FakeTwistCommando(welcome: nil)
-        defer { fake.stop() }
-        #expect(await eventually { fake.port != nil })
-        let provider = makeProvider()
-        var compatibility = AppLinkCompatibility(port: fake.port!, onlyWhileRunning: nil)
-        compatibility.retryDelay = .milliseconds(200)
-        compatibility.welcomeTimeout = .milliseconds(300)
-        provider.appLinkCompatibility = compatibility
-        provider.start()
-        defer { provider.stop() }
-        // Times out, closes, and tries again.
-        #expect(await eventually { fake.connections >= 2 })
-        #expect(provider.consumers.isEmpty)
-    }
 }
 
 // MARK: Helpers
@@ -537,54 +477,5 @@ final class RawClient {
                 if complete || error != nil { self.isClosed = true } else { self.receive() }
             }
         }
-    }
-}
-
-/// Listens like Twist Commando 0.14's App Link: replies to hello with a welcome, records the rest.
-@MainActor
-final class FakeTwistCommando {
-    let listener: NWListener
-    private(set) var port: UInt16?
-    private(set) var received: [Message] = []
-    private(set) var connections = 0
-    private(set) var openConnections = 0
-    private var peers: [LineConnection] = []
-
-    init(welcome: String?) throws {
-        let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
-        listener = try NWListener(using: parameters)
-        let welcomeMessage = try welcome.map { try Message.decode(Data($0.utf8)) }
-        listener.stateUpdateHandler = { [weak self] state in
-            MainActor.assumeIsolated {
-                guard let self, case .ready = state else { return }
-                self.port = self.listener.port?.rawValue
-            }
-        }
-        listener.newConnectionHandler = { [weak self] connection in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let peer = LineConnection(connection)
-                self.connections += 1
-                self.openConnections += 1
-                self.peers.append(peer)
-                peer.onMessage = { [weak self, weak peer] message in
-                    self?.received.append(message)
-                    if case .hello = message, let welcomeMessage { peer?.send(welcomeMessage) }
-                }
-                peer.onClose = { [weak self] in self?.openConnections -= 1 }
-                peer.start()
-            }
-        }
-        listener.start(queue: .main)
-    }
-
-    func send(_ message: Message) {
-        for peer in peers where !peer.isClosed { peer.send(message) }
-    }
-
-    func stop() {
-        listener.cancel()
-        for peer in peers { peer.close() }
     }
 }

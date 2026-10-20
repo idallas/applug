@@ -8,7 +8,6 @@ struct MessageTests {
     @Test func roundTripsEveryMessage() throws {
         let messages: [Message] = [
             .hello(Hello(app: "com.example.Mixer", name: "Mixer", version: "1.2", key: "0123456789abcdef")),
-            .welcome(Welcome(app: "Twist Commando", version: "0.14.0", protocolVersion: 2, meters: true)),
             .controls([
                 Control(id: "volume", name: "Volume", kind: .level, value: 0.5, text: "-6 dB"),
                 Control(id: "mute", name: "Mute", kind: .toggle, on: true, group: "Main"),
@@ -35,8 +34,8 @@ struct MessageTests {
     @Test func readsAppLinkStyleLines() throws {
         // Integers where decimals are expected, and fields this package doesn't know.
         #expect(try decode(#"{"type":"turn","id":"v","value":1,"extra":true}"#) == .turn(id: "v", value: 1, steps: nil))
-        #expect(try decode(#"{"type":"welcome","app":"Twist Commando","version":"0.14.0","protocol":2,"meters":true}"#)
-            == .welcome(Welcome(app: "Twist Commando", version: "0.14.0", protocolVersion: 2, meters: true)))
+        // App Link's welcome is just an unknown type now, ignored like any other.
+        #expect(try decode(#"{"type":"welcome","app":"Twist Commando","protocol":2}"#) == .unknown(type: "welcome"))
         // A hello without a name uses the app; one without a protocol is App Link 1.
         #expect(try decode(#"{"type":"hello","app":" com.example.X "}"#) == .hello(Hello(app: "com.example.X", name: "com.example.X", protocolVersion: nil)))
     }
@@ -63,7 +62,6 @@ struct MessageTests {
         #expect(throws: Message.DecodeError.self) { try decode(#"{"type":"turn","id":"s","steps":-9223372036854775809}"#) }
         #expect(try decode(#"{"type":"turn","id":"s","steps":1e300,"value":0.5}"#) == .turn(id: "s", value: 0.5, steps: nil))
         #expect(try decode(#"{"type":"hello","app":"a","protocol":1e300}"#) == .hello(Hello(app: "a", name: "a", protocolVersion: nil)))
-        #expect(try decode(#"{"type":"welcome","protocol":-1e300}"#) == .welcome(Welcome(app: nil, version: nil, protocolVersion: nil, meters: false)))
         guard case .controls(let controls) = try decode(#"{"type":"controls","controls":[{"id":"m","kind":"meter","channels":1e300}]}"#) else {
             Issue.record("not controls"); return
         }

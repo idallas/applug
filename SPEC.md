@@ -200,28 +200,14 @@ What keeps who out:
 
 So providers should offer only controls they'd be happy for any app you run to use, and both sides should treat everything they receive as untrusted input: check ids, clamp values, clean text, honour the limits.
 
-## App Link 1 and 2 (Twist Commando 0.13 and 0.14)
-
-Twist Commando 0.14 and earlier don't know Applug. They listen on 127.0.0.1:9034 and wait for apps to connect in. A provider that wants to work with them too can also:
-
-1. Connect to 127.0.0.1:9034 while Twist Commando is running (an app whose bundle identifier starts with `com.twistcommando.`), retrying every few seconds, backing off to a minute.
-2. Send `hello` with its `app`, `name` and `"protocol": 3` (no key).
-3. Wait up to 5 seconds for Twist Commando's `welcome` (no welcome: close, and retry later):
-   ```json
-   {"type": "welcome", "app": "Twist Commando", "version": "0.14.0", "protocol": 2, "meters": true}
-   ```
-   - `protocol` 3 or higher: this Twist Commando finds Applug providers itself. Close the connection, and don't connect to 9034 again until Twist Commando relaunches.
-   - Otherwise: send `controls`, leaving out meters unless `meters` is true, and `readOnly` levels go as plain levels (Twist Commando ignores the field). Then carry on exactly as with an Applug consumer.
-
-A Twist Commando that speaks Applug keeps listening on 9034 for apps that only know App Link, and should reply to their `hello` with `welcome` `"protocol": 3`. If the same `app` reaches it both ways, it prefers the Applug connection.
-
-The Applug Swift package does all of this when you turn on `appLinkCompatibility`.
-
 ## Changes from App Link 2
+
+Applug doesn't speak App Link: a provider reaches Twist Commando only through Twist Commando's own Applug consumer, so it needs a Twist Commando that speaks Applug.
+
 
 - Providers listen and consumers connect, instead of everyone connecting to Twist Commando's port. Any number of consumers.
 - Discovery with distributed notifications.
-- Both sides send `hello`; there's no `welcome` (except on the App Link 1 port). The consumer's carries the provider's key.
+- Both sides send `hello`; there's no `welcome`. The consumer's carries the provider's key.
 - `readOnly` for levels.
 - Unknown kinds are skipped, not treated as levels.
 - A line over 1 MB, a line that isn't a usable message, or a message before `hello` closes the connection. (App Link answered with `error` and carried on.)

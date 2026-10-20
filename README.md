@@ -21,7 +21,6 @@ let provider = ApplugProvider(name: "ThUNER", controls: [
     Control(id: "threshold", name: "Threshold", kind: .level, value: 0.4, text: "-24 dB"),
     Control(id: "input", name: "Input", kind: .meter, channels: 2),
 ])
-provider.appLinkCompatibility = AppLinkCompatibility()   // also reach Twist Commando 0.13 and 0.14
 
 provider.onPress = { press in
     if press.id == "radio", press.down { model.radioMode.toggle() }

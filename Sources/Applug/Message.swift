@@ -21,18 +21,9 @@ public struct Hello: Equatable, Sendable {
     }
 }
 
-/// Twist Commando's reply on the App Link 1 port.
-public struct Welcome: Equatable, Sendable {
-    public var app: String?
-    public var version: String?
-    public var protocolVersion: Int?
-    public var meters: Bool
-}
-
 /// One line on the wire.
 public enum Message: Equatable, Sendable {
     case hello(Hello)
-    case welcome(Welcome)
     case controls([Control])
     case update(Update)
     case meter(id: String, levels: [Double])
@@ -74,11 +65,6 @@ public enum Message: Equatable, Sendable {
             return .hello(Hello(
                 app: app, name: name, version: string("version").map(Limits.name),
                 protocolVersion: int("protocol"), key: string("key").map(Limits.name)
-            ))
-        case "welcome":
-            return .welcome(Welcome(
-                app: string("app").map(Limits.name), version: string("version").map(Limits.name),
-                protocolVersion: int("protocol"), meters: bool("meters") ?? false
             ))
         case "controls":
             guard let list = json["controls"] as? [Any] else {
@@ -154,12 +140,6 @@ public enum Message: Equatable, Sendable {
             if let version = hello.version { json["version"] = version }
             if let p = hello.protocolVersion { json["protocol"] = p }
             if let key = hello.key { json["key"] = key }
-            return json
-        case .welcome(let welcome):
-            var json: [String: Any] = ["type": "welcome", "meters": welcome.meters]
-            if let app = welcome.app { json["app"] = app }
-            if let version = welcome.version { json["version"] = version }
-            if let p = welcome.protocolVersion { json["protocol"] = p }
             return json
         case .controls(let controls):
             return ["type": "controls", "controls": controls.map(Message.json(for:))]

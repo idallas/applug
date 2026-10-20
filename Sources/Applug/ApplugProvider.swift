@@ -49,16 +49,12 @@ public final class ApplugProvider {
     public private(set) var controls: [Control]
     /// The port it's listening on, once it is.
     public private(set) var port: UInt16?
-    /// Consumers that have said hello, App Link included.
+    /// Consumers that have said hello.
     public var consumers: [Hello] { sessions.compactMap { $0.ready ? $0.peer : nil } }
     /// Meters at least one consumer is watching. Measure only these.
     public private(set) var watchedMeters: Set<String> = []
     /// Why it isn't listening, if it isn't.
     public private(set) var problem: String?
-
-    /// Also connect to Twist Commando's App Link port, for versions that don't speak Applug.
-    /// Set before `start()`.
-    public var appLinkCompatibility: AppLinkCompatibility?
 
     public var onTurn: ((Turn) -> Void)?
     public var onPress: ((Press) -> Void)?
@@ -75,7 +71,6 @@ public final class ApplugProvider {
     private let observers = ObserverBag()
     private var running = false
     private var restartTask: Task<Void, Never>?
-    private var appLinkDialer: AppLinkDialer?
     /// Controls touched by a turn or press since their last update: the next `set` goes out even if nothing changed.
     private var echoDue: Set<String> = []
     private var lastAnnounce: ContinuousClock.Instant?
@@ -102,13 +97,6 @@ public final class ApplugProvider {
         key = Announcement.makeKey()
         discovery.observe(discovery.queryName, in: observers) { [weak self] _ in self?.announceSoon() }
         listen()
-        if let appLinkCompatibility {
-            let dialer = AppLinkDialer(settings: appLinkCompatibility) { [weak self] connection in
-                self?.adopt(connection, appLink: true)
-            }
-            appLinkDialer = dialer
-            dialer.start()
-        }
     }
 
     /// Says goodbye and closes every connection.
@@ -121,8 +109,6 @@ public final class ApplugProvider {
         restartTask = nil
         announceTask?.cancel()
         announceTask = nil
-        appLinkDialer?.stop()
-        appLinkDialer = nil
         listenerHandle.replace(with: nil, goodbye: nil)
         port = nil
         for session in sessions { session.connection.close() }
@@ -144,7 +130,7 @@ public final class ApplugProvider {
         listener.newConnectionHandler = { [weak self] connection in
             MainActor.assumeIsolated {
                 guard let self, self.hasRoom else { return connection.cancel() }
-                self.adopt(LineConnection(connection), appLink: false)
+                self.adopt(LineConnection(connection))
             }
         }
         listener.stateUpdateHandler = { [weak self, weak listener] state in
@@ -170,9 +156,8 @@ public final class ApplugProvider {
 
     /// Whether another consumer can connect: at most 64, and at most 16 still to say hello.
     private var hasRoom: Bool {
-        let regular = sessions.filter { !$0.appLink }
-        return regular.count < Limits.maxConnections
-            && regular.filter { !$0.ready }.count < Limits.maxConnectionsBeforeHello
+        sessions.count < Limits.maxConnections
+            && sessions.filter { !$0.ready }.count < Limits.maxConnectionsBeforeHello
     }
 
     private func fail(_ message: String) {
@@ -218,7 +203,7 @@ public final class ApplugProvider {
         self.controls = Limits.tidy(controls)
         echoDue.formIntersection(self.controls.map(\.id))
         for session in sessions where session.ready {
-            session.connection.send(.controls(controlList(for: session)))
+            session.connection.send(.controls(self.controls))
             session.subscriptions.formIntersection(meterIDs)
         }
         updateWatchedMeters()
@@ -252,7 +237,7 @@ public final class ApplugProvider {
             if update.on == nil { update.on = now.on }
         }
         guard !update.isEmpty else { return }
-        broadcast(update, kind: now.kind)
+        broadcast(update)
     }
 
     /// Renames a control.
@@ -260,7 +245,7 @@ public final class ApplugProvider {
         let name = Limits.name(name)
         guard !name.isEmpty, let index = controls.firstIndex(where: { $0.id == id }), controls[index].name != name else { return }
         controls[index].name = name
-        broadcast(Update(id: id, name: name), kind: controls[index].kind)
+        broadcast(Update(id: id, name: name))
     }
 
     /// Sends a meter's peak levels (dBFS per channel) to consumers watching it. About 20 times a second.
@@ -272,28 +257,20 @@ public final class ApplugProvider {
         }
     }
 
-    private func broadcast(_ update: Update, kind: Control.Kind) {
-        for session in sessions where session.ready && (kind != .meter || session.meters) {
+    private func broadcast(_ update: Update) {
+        for session in sessions where session.ready {
             session.connection.send(.update(update))
         }
     }
 
     private var meterIDs: Set<String> { Set(controls.filter { $0.kind == .meter }.map(\.id)) }
 
-    private func controlList(for session: Session) -> [Control] {
-        session.meters ? controls : controls.filter { $0.kind != .meter }
-    }
-
     // MARK: Connections
 
-    private func adopt(_ connection: LineConnection, appLink: Bool) {
-        let session = Session(connection: connection, appLink: appLink)
+    private func adopt(_ connection: LineConnection) {
+        let session = Session(connection: connection)
         sessions.append(session)
-        if !appLink { connection.maxLine = Limits.maxLineBeforeHello }
-        connection.onReady = { [weak self, weak session, weak connection] in
-            guard let self, let session, session.appLink else { return }
-            connection?.send(.hello(self.identity))
-        }
+        connection.maxLine = Limits.maxLineBeforeHello
         connection.onMessage = { [weak self, weak session] message in
             guard let self, let session else { return }
             self.handle(message, from: session)
@@ -302,23 +279,21 @@ public final class ApplugProvider {
             guard let self, let session else { return }
             session.handshakeTimeout?.cancel()
             self.sessions.removeAll { $0 === session }
-            if session.appLink { self.appLinkDialer?.ended(wasReady: session.ready) }
             if session.ready { self.onConsumersChange?(self.consumers) }
             self.updateWatchedMeters()
         }
-        // A consumer has a few seconds to say hello; Twist Commando, to send its welcome.
-        let timeout = appLink ? appLinkDialer?.settings.welcomeTimeout ?? .seconds(5) : .seconds(3)
+        // A consumer has a few seconds to say hello.
         session.handshakeTimeout = Task { [weak session] in
-            try? await Task.sleep(for: timeout)
+            try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled, let session, !session.ready else { return }
-            session.connection.close(sayingError: session.appLink ? "No welcome" : "Send hello first")
+            session.connection.close(sayingError: "Send hello first")
         }
         connection.start()
     }
 
     private func handle(_ message: Message, from session: Session) {
         switch message {
-        case .hello(let hello) where !session.appLink:
+        case .hello(let hello):
             guard !session.ready else { return }   // a second hello changes nothing
             guard let offered = hello.key, Self.same(offered, key) else {
                 return session.connection.close(sayingError: "hello needs the \"key\" from the announcement")
@@ -328,28 +303,12 @@ public final class ApplugProvider {
             session.handshakeTimeout?.cancel()
             session.connection.maxLine = Limits.maxLine
             session.connection.send(.hello(identity))
-            session.connection.send(.controls(controlList(for: session)))
-            onConsumersChange?(consumers)
-        case .welcome(let welcome) where session.appLink && !session.ready:
-            session.handshakeTimeout?.cancel()
-            if let version = welcome.protocolVersion, version >= applugProtocolVersion {
-                // This Twist Commando finds Applug providers itself.
-                appLinkDialer?.suppress()
-                session.connection.close()
-                return
-            }
-            session.meters = welcome.meters
-            session.peer = Hello(
-                app: "com.twistcommando.TwistCommando", name: welcome.app ?? "Twist Commando",
-                version: welcome.version, protocolVersion: welcome.protocolVersion
-            )
-            session.ready = true
-            session.connection.send(.controls(controlList(for: session)))
+            session.connection.send(.controls(controls))
             onConsumersChange?(consumers)
         case _ where !session.ready:
-            session.connection.close(sayingError: session.appLink ? "Expected welcome" : "Send hello first")
+            session.connection.close(sayingError: "Send hello first")
         case .turn(let id, let value, let steps):
-            guard let control = control(id, for: session) else {
+            guard let control = control(id) else {
                 return session.connection.send(.error("No control \"\(id)\""))
             }
             // Turns on things that don't turn are ignored (SPEC.md › turn).
@@ -362,14 +321,14 @@ public final class ApplugProvider {
                 onTurn?(Turn(id: id, steps: steps, from: peer))
             }
         case .press(let id, let down):
-            guard let control = control(id, for: session) else {
+            guard let control = control(id) else {
                 return session.connection.send(.error("No control \"\(id)\""))
             }
             guard control.kind.presses, let peer = session.peer else { return }
             echoDue.insert(id)
             onPress?(Press(id: id, down: down, from: peer))
         case .meterSubscribe(let id, let on):
-            guard let control = control(id, for: session), control.kind == .meter else {
+            guard let control = control(id), control.kind == .meter else {
                 return session.connection.send(.error("No meter \"\(id)\""))
             }
             if on { session.subscriptions.insert(id) } else { session.subscriptions.remove(id) }
@@ -381,8 +340,8 @@ public final class ApplugProvider {
         }
     }
 
-    private func control(_ id: String, for session: Session) -> Control? {
-        controls.first { $0.id == id && (session.meters || $0.kind != .meter) }
+    private func control(_ id: String) -> Control? {
+        controls.first { $0.id == id }
     }
 
     private func updateWatchedMeters() {
@@ -404,19 +363,13 @@ public final class ApplugProvider {
 @MainActor
 private final class Session {
     let connection: LineConnection
-    /// Connected out to Twist Commando's App Link port, rather than in from an Applug consumer.
-    let appLink: Bool
     var peer: Hello?
     var ready = false
-    /// Whether it gets meter controls. App Link only says so in its welcome.
-    var meters = true
     var subscriptions: Set<String> = []
     var handshakeTimeout: Task<Void, Never>?
 
-    init(connection: LineConnection, appLink: Bool) {
+    init(connection: LineConnection) {
         self.connection = connection
-        self.appLink = appLink
-        self.meters = !appLink
     }
 }
 

@@ -9,8 +9,7 @@ let usage = """
       applug turn APP ID VALUE       Move a level to VALUE (0 to 1)
       applug step APP ID STEPS       Move a steps control (negative goes back)
       applug press APP ID            Press and let go
-      applug demo [--app-link]       Offer a few made-up controls, as a provider
-                                     (--app-link: to Twist Commando 0.14 too, which remembers it)
+      applug demo                    Offer a few made-up controls, as a provider
 
     APP is a bundle identifier or a provider's name (case doesn't matter).
     """
@@ -18,8 +17,7 @@ let usage = """
 setvbuf(stdout, nil, _IOLBF, 0)
 var arguments = Array(CommandLine.arguments.dropFirst())
 let showMeters = arguments.contains("--meters")
-let appLink = arguments.contains("--app-link")
-arguments.removeAll { $0 == "--meters" || $0 == "--app-link" }
+arguments.removeAll { $0 == "--meters" }
 guard let command = arguments.first else {
     print(usage)
     exit(0)
@@ -154,7 +152,6 @@ case "demo":
         Control(id: "clock", name: "Seconds", kind: .level, value: 0, text: "0 s", group: "Readouts", readOnly: true),
         Control(id: "wave", name: "Wave", kind: .meter, group: "Readouts", channels: 2),
     ])
-    if appLink { provider.appLinkCompatibility = AppLinkCompatibility() }
     provider.onTurn = { turn in
         if turn.id == "volume", let value = turn.value {
             level = value
