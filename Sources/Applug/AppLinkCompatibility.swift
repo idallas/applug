@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 /// How a provider reaches Twist Commando versions that only speak App Link (SPEC.md › App Link 1 and 2).
 public struct AppLinkCompatibility: Sendable, Equatable {
@@ -95,9 +96,51 @@ final class AppLinkDialer {
 
     private func attempt() {
         guard running, connection == nil, let pid = targetPID(), !applugSpeakers.contains(pid) else { return }
+        // Only dial if a Twist Commando in this session is the one listening on the port. Otherwise
+        // something else grabbed it first (another account's process, say, since loopback ports are
+        // shared across accounts), and connecting would hand it our controls and let it drive them.
+        // There's no key on the App Link port, so this ownership check is what keeps it to our own apps.
+        guard trustsListener(onPort: settings.port) else {
+            // The app is running but isn't on the port yet, or isn't the one holding it. Look again later.
+            schedule(after: delay)
+            delay = min(delay * 2, .seconds(60))
+            return
+        }
         let connection = LineConnection.loopback(port: settings.port)
         self.connection = connection
         connect(connection)
+    }
+
+    /// Whether a running `onlyWhileRunning` app owns the listening socket on `port`. True in tests,
+    /// which set `onlyWhileRunning` to nil to dial a fake listener regardless.
+    private func trustsListener(onPort port: UInt16) -> Bool {
+        guard let prefix = settings.onlyWhileRunning else { return true }
+        let pids = NSWorkspace.shared.runningApplications
+            .filter { $0.bundleIdentifier?.hasPrefix(prefix) == true }
+            .map(\.processIdentifier)
+        return pids.contains { Self.process($0, listensOn: port) }
+    }
+
+    /// Whether process `pid` holds a TCP socket listening on `port` (local port set, no peer).
+    private static func process(_ pid: pid_t, listensOn port: UInt16) -> Bool {
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return false }
+        let capacity = Int(size) / MemoryLayout<proc_fdinfo>.stride
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: capacity)
+        let written = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, size)
+        guard written > 0 else { return false }
+        let count = min(Int(written) / MemoryLayout<proc_fdinfo>.stride, capacity)
+        for fd in fds.prefix(count) where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let infoSize = Int32(MemoryLayout<socket_fdinfo>.size)
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, infoSize) == infoSize,
+                  info.psi.soi_kind == SOCKINFO_TCP else { continue }
+            let socket = info.psi.soi_proto.pri_tcp.tcpsi_ini
+            let localPort = UInt16(bigEndian: UInt16(truncatingIfNeeded: socket.insi_lport))
+            let peerPort = UInt16(bigEndian: UInt16(truncatingIfNeeded: socket.insi_fport))
+            if localPort == port && peerPort == 0 { return true }
+        }
+        return false
     }
 
     /// Twist Commando's process id while it runs (the app itself, not a helper); 0 when no app is required.

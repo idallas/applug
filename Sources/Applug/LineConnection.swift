@@ -19,6 +19,13 @@ final class LineConnection {
     /// Closing after sending an error: the socket closes itself shortly, so leave it be.
     private var closingGracefully = false
 
+    /// Connections lingering in a graceful close right now, and the most allowed at once. A graceful
+    /// close holds its socket for up to half a second so the other side can read the error; beyond this
+    /// many, close hard instead, so a flood of doomed connections (a web page POSTing junk, say) can't
+    /// tie up the process's file descriptors outside the connection limits.
+    private static var draining = 0
+    private static let maxDraining = 32
+
     init(_ connection: NWConnection) {
         self.connection = connection
     }
@@ -83,12 +90,23 @@ final class LineConnection {
     func close(sayingError message: String) {
         guard !closed else { return }
         let connection = self.connection
+        // Too many already lingering: send the error best-effort and reset now, rather than holding
+        // another file descriptor open for half a second.
+        guard Self.draining < Self.maxDraining else {
+            connection.send(content: Message.error(message).encoded(), completion: .idempotent)
+            close()
+            return
+        }
         // Send it as the last thing on the connection, keep reading (and ignoring) whatever is still
         // arriving, and close a moment later. Closing a socket with unread data resets it, which can
         // throw away the error before the other side reads it.
+        Self.draining += 1
         connection.send(content: Message.error(message).encoded(), contentContext: .finalMessage, isComplete: true, completion: .idempotent)
         Self.drain(connection)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { connection.cancel() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            connection.cancel()
+            MainActor.assumeIsolated { Self.draining -= 1 }
+        }
         closingGracefully = true
         finish()
     }
